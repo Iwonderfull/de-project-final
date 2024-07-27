@@ -1,0 +1,2 @@
+COPY STV2024021912__STAGING.currencies(currency_code, currency_code_with, date_update, currency_with_div) 
+FROM LOCAL '/lessons/data/currencies_history.csv' DELIMITER ',' REJECTED DATA AS TABLE STV2024021912__STAGING.currencies_rej;
