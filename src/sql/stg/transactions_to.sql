@@ -1,0 +1,2 @@
+COPY STV2024021912__STAGING.transactions(operation_id, account_number_from, account_number_to, currency_code, country, status, transaction_type, amount, transaction_dt) 
+FROM LOCAL '{{local_path}}' DELIMITER ',' REJECTED DATA AS TABLE STV2024021912__STAGING.transactions_rej;

@@ -1,68 +1,130 @@
 """\
-Загружает данные из источника 
+Загружает данные о транзакциях из источника в Вертику
 
 ### Соединения
-- 
+- `e-commerce-yapg (Postgres)` - соединение с постгресом
+- `e-commerce-vertica (Vertica)` - сокдинение с вертикой
 
 ### Переменные
-- 
+- `stage-sql-path (str)` - путь к папке с sql-скриптами
+
+### Зависимости
+- pydantic
+- typing_extensions=4.7.1
+
+### Провайдеры
+- vertica
+- postgres
 """
 
 import csv
 from pathlib import Path
-from typing import Any
+from datetime import datetime
+
 import pendulum
+from pydantic import BaseModel
+from psycopg2.extensions import cursor as Psycopg2Cursor
+from vertica_python import Connection as VerticaConnection
+from vertica_python.vertica.cursor import Cursor as VerticaCursor
+
+# from psycopg2.extras import DictRow #  hook.get_conn().cursor(cursor_factory=DictRow) вызывает странную ошибку
+
+from jinja2 import TemplateNotFound
 from airflow import DAG
-from airflow.models import Variable
+from airflow.models import Variable, TaskInstance
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
-from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.providers.vertica.hooks.vertica import VerticaHook
-from airflow.providers.vertica.operators.vertica import VerticaOperator
-from airflow.utils.log.logging_mixin import LoggingMixin
+from airflow.providers.vertica.operators.vertica import (
+    VerticaOperator,
+)  # нет подстановки параметров ни через parameters, ни через params
 
 
-class VerticaHandler(LoggingMixin):
-    "Transfering data to veritca"
-
-    def __init__(self, conn_id: str, target_table: str, local_path: str) -> None:
-        self._conn_id = conn_id
-        self._local_path = Path(local_path)
-        self._target_table = target_table
-
-    def __call__(self, cursor):
-        vertica_hook = VerticaHook(self._conn_id)
-        # vertica_hook.bulk_load(transactions)
-
-
-class LocalWriter(LoggingMixin):
-    def __init__(
-        self,
-        local_path,
-    ) -> None:
-        self.local_path = Path(local_path)
-
-    def __call__(self, cursor) -> Any:
-        self.log.info("Usign local path: %s", self.local_path)
-        with self.local_path.open("w") as fp:
-            writer = csv.writer(fp)
-            for row in cursor:
-                self.log.info("write row: %s", row)
-                writer.writerow(row)
-
-
-def get_transactions(conn_id: str, local_path: str, dag: DAG, logical_date):
-    hook = PostgresHook(conn_id)
-    env = dag.get_template_env()
-    template = env.get_template("transactions_from.sql")
-    date = logical_date.to_date_string()
-    query = template.render(since=date)
-    print("Get a day of transactions since:", date)
-    cursor = hook.get_cursor()
+def _upload_transactions_to_vertica(
+    vertica_conn_id: str,
+    sql: str,
+    table_name: str,
+    local_path: str,
+    ti: TaskInstance,
+    dag: DAG,
+) -> None:
+    hook = VerticaHook(vertica_conn_id)
+    ti.log.info("Costruct query with param: %s", local_path)
+    try:
+        env = dag.get_template_env()
+        template = env.get_template(sql)
+        query = template.render(local_path=local_path)
+    except TemplateNotFound:
+        query = sql
+    ti.log.info("Upload to Vertica: %s", local_path)
+    # hook.bulk_load(table_name, local_path) # Not implemented Error ))
+    conn: VerticaConnection = hook.get_conn()
+    cursor: VerticaCursor = conn.cursor()
     cursor.execute(query)
-    with Path(local_path).open("w") as fp:
+    ti.log.info("Rows upload: %s", cursor.fetchall())
+    cursor.close()
+
+
+def _donwload_transactions(
+    conn_id: str,
+    local_path: str,
+    sql: str,
+    days_interval: int,
+    dag: DAG,
+    ti: TaskInstance,
+    logical_date,
+) -> str:
+    class Transaction(BaseModel):
+        operation_id: str
+        account_number_from: int
+        account_number_to: int
+        currency_code: int
+        country: str
+        status: str
+        transaction_type: str
+        amount: int
+        transaction_dt: datetime
+
+    hook = PostgresHook(conn_id)
+
+    # Construct query
+    date_since = logical_date.to_date_string()
+    date_before = logical_date.add(days=days_interval).to_date_string()
+    ti.log.info("Costruct query with for %s days since: %s", days_interval, date_since)
+    try:
+        env = dag.get_template_env()
+        template = env.get_template(sql)
+        query = template.render(since=date_since, before=date_before)
+    except TemplateNotFound:
+        query = sql
+
+    # Execute query
+    ti.log.info(
+        "Get data from transactions since: %s and before: %s", date_since, date_before
+    )
+    cursor: Psycopg2Cursor = hook.get_cursor()
+    cursor.execute(query)
+    ti.log.info("Affected %s rows", cursor.rowcount)
+    if not cursor.rowcount:
+        ti.log.info("No data available.")
+        cursor.close()
+        return
+
+    # Get field names
+    field_names = [desc[0] for desc in cursor.description]
+    ti.log.info("Write data to file: %s", local_path)
+    # Write rows to file
+    local_path = Path(local_path)
+    with local_path.open("w") as fp:
+        writer = csv.DictWriter(fp, fieldnames=field_names, lineterminator="\n")
+        # Write witout header
         for row in cursor:
-            fp.write(",".join(map(str, row)))
+            transaction = Transaction(
+                **{name: value for name, value in zip(field_names, row)}
+            )
+            writer.writerow(transaction.model_dump(mode="json"))
+    cursor.close()
+    return local_path.resolve().as_posix()
 
 
 with DAG(
@@ -71,49 +133,39 @@ with DAG(
     schedule="@daily",
     start_date=pendulum.from_format("01-10-2022", "DD-MM-YYYY"),
     end_date=pendulum.from_format("02-11-2022", "DD-MM-YYYY"),
-    template_searchpath=Variable.get("e-commerce-stage-sql", "/lessons/sql/stg"),
+    template_searchpath=Variable.get("stage-sql-path", "/lessons/sql/stg"),
     default_args={"owner": "badun61"},
     catchup=True,
     doc_md=__doc__,
     is_paused_upon_creation=True,
 ) as dag:
-    # ensure_tables = VerticaOperator(
-    #     task_id="ensure_tables",
-    #     vertica_conn_id="e-commerce-vertica",
-    #     sql="ddl.sql",
-    # )
+    ensure_tables = VerticaOperator(
+        task_id="ensure_tables",
+        vertica_conn_id="e-commerce-vertica",
+        sql="ddl.sql",
+    )
 
-    # load_transactions = SQLExecuteQueryOperator(
-    #     task_id="load_transactions",
-    #     sql_conn_id="e-commerce-yapg",
-    #     # handler=VerticaHandler("e-commerce-vertica"),
-    #     sql="transactions_from.sql",
-    #     parameters={
-    #         "since": "{{ dag_run.logical_date }}",
-    #         "before": "{{ dag_run.logical_date }}",
-    #         "local_path": ...
-    #     },
-    # )
-
-    # load_transactions = SQLExecuteQueryOperator(
-    #     task_id="load_transactions",
-    #     conn_id="e-commerce-yapg",
-    #     handler=LocalWriter("/lessons/data/transactions_{{ ds }}.csv"),
-    #     sql="transactions_from.sql",
-    #     parameters={
-    #         "since": "{{ ds }}",
-    #         # "local_path": "/lessons/data/transactions_{{ds}}.csv",
-    #     },
-    #     # do_xcom_push=False,
-    # )
-
-    success = PythonOperator(
-        task_id="get_transactions",
-        python_callable=get_transactions,
+    donwload_transactions = PythonOperator(
+        task_id="donwload_transactions",
+        python_callable=_donwload_transactions,
         op_kwargs={
             "conn_id": "e-commerce-yapg",
             "local_path": "/lessons/data/transactions_{{ ds }}.csv",
+            "sql": "transactions_from.sql",
+            "days_interval": 1,
         },
     )
 
-    # (ensure_tables >> load_transactions)
+    upload_transactions_to_vertica = PythonOperator(
+        task_id="upload_transactions_to_vertica",
+        python_callable=_upload_transactions_to_vertica,
+        op_kwargs={
+            "vertica_conn_id": "e-commerce-vertica",
+            "sql": "transactions_to.sql",
+            "table_name": "STV2024021912__STAGING.transactions",
+            "local_path": '{{ti.xcom_pull(task_ids="donwload_transactions")}}',
+        },
+    )
+
+    ensure_tables >> upload_transactions_to_vertica
+    donwload_transactions >> upload_transactions_to_vertica

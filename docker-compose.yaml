@@ -1,0 +1,11 @@
+services:
+  project:
+    image: cr.yandex/crp1r8pht0n0gl25aug1/de-final-prj:latest
+    ports:
+      - 8998:8998 
+      - 8280:8280 
+      - 15432:5432
+    volumes:
+      - ./src/dags/:/lessons/dags/
+      - ./src/sql/:/lessons/sql/
+      - ./src/py/:/lessons/py/
