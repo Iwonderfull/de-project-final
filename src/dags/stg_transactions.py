@@ -38,6 +38,7 @@ from airflow.providers.vertica.hooks.vertica import VerticaHook
 from airflow.providers.vertica.operators.vertica import (
     VerticaOperator,
 )  # нет подстановки параметров ни через parameters, ни через params
+from airflow.exceptions import AirflowSkipException
 
 
 def _upload_transactions_to_vertica(
@@ -48,6 +49,8 @@ def _upload_transactions_to_vertica(
     ti: TaskInstance,
     dag: DAG,
 ) -> None:
+    if not local_path or local_path == "None":
+        raise AirflowSkipException("No data available.")
     hook = VerticaHook(vertica_conn_id)
     ti.log.info("Costruct query with param: %s", local_path)
     try:
@@ -60,8 +63,10 @@ def _upload_transactions_to_vertica(
     # hook.bulk_load(table_name, local_path) # Not implemented Error ))
     conn: VerticaConnection = hook.get_conn()
     cursor: VerticaCursor = conn.cursor()
+    ti.log.info("Using query:\n%s", query)
     cursor.execute(query)
     ti.log.info("Rows upload: %s", cursor.fetchall())
+    conn.commit()
     cursor.close()
 
 
@@ -106,9 +111,8 @@ def _donwload_transactions(
     cursor.execute(query)
     ti.log.info("Affected %s rows", cursor.rowcount)
     if not cursor.rowcount:
-        ti.log.info("No data available.")
         cursor.close()
-        return
+        raise AirflowSkipException("No data available.")
 
     # Get field names
     field_names = [desc[0] for desc in cursor.description]
