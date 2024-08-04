@@ -1,3 +1,20 @@
+"""\
+Загружает данные слоя витрин
+
+### Соединения
+- `e-commerce-vertica (Vertica)` - соединение с вертикой
+
+### Переменные
+- `cdm-sql-path (str)` - путь к папке с sql-скриптами
+
+### Зависимости
+- vertica_python
+
+### Провайдеры
+- vertica
+- postgres
+"""
+
 from typing import Tuple
 import pendulum
 from vertica_python import Connection as VerticaConnection

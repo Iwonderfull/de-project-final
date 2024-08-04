@@ -3,7 +3,7 @@
 
 ### Соединения
 - `e-commerce-yapg (Postgres)` - соединение с постгресом
-- `e-commerce-vertica (Vertica)` - сокдинение с вертикой
+- `e-commerce-vertica (Vertica)` - соединение с вертикой
 
 ### Переменные
 - `stage-sql-path (str)` - путь к папке с sql-скриптами
