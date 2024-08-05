@@ -26,9 +26,6 @@ from pydantic import BaseModel
 from psycopg2.extensions import cursor as Psycopg2Cursor
 from vertica_python import Connection as VerticaConnection
 from vertica_python.vertica.cursor import Cursor as VerticaCursor
-
-# from psycopg2.extras import DictRow #  hook.get_conn().cursor(cursor_factory=DictRow) вызывает странную ошибку
-
 from jinja2 import TemplateNotFound
 from airflow import DAG
 from airflow.models import Variable, TaskInstance
@@ -37,7 +34,7 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.providers.vertica.hooks.vertica import VerticaHook
 from airflow.providers.vertica.operators.vertica import (
     VerticaOperator,
-)  # нет подстановки параметров ни через parameters, ни через params
+)
 from airflow.exceptions import AirflowSkipException
 
 

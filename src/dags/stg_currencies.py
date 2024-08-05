@@ -75,10 +75,6 @@ with DAG(
         task_id="upload_currencies",
         vertica_conn_id="e-commerce-vertica",
         sql="currencies_to.sql",
-        # оба варианта не отрабатывают, шаблон скрипта не заполняется,
-        # поэтому для одного файла указан статичный путь
-        # parameters={"currencies_path": '{{ti.xcom_pull(task_ids="download_currencies")}}'},
-        # params={"currencies_path": download_currencies.output},
     )
 
     [download_currencies, ensure_tables] >> upload_currencies
